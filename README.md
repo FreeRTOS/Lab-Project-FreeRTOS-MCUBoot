@@ -1,15 +1,9 @@
-## My Project
+# Labs-FreeRTOS-Plus-MCUBoot
+Reference examples for FreeRTOS with [MCUBoot](https://github.com/mcu-tools/mcuboot) support.
 
-TODO: Fill this README out!
-
-Be sure to:
-
-* Change the title in this README
-* Edit your repository description on GitHub
-
-## Security
-
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+| Supported Boards |
+| ---- |
+| Espressif esp32 |
 
 ## License
 

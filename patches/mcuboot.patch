@@ -1,0 +1,1850 @@
+From 553de8caafbae337ce406052ebbd17c76d4d253d Mon Sep 17 00:00:00 2001
+From: dachalco <david@chalco.io>
+Date: Tue, 7 Dec 2021 16:26:50 -0800
+Subject: [PATCH] clean rebase
+
+---
+ boot/boot_serial/src/boot_serial.c            |  32 +++-
+ boot/boot_serial/src/cbor_common.c            |  70 +++----
+ boot/boot_serial/src/cbor_common.h            |  45 +++--
+ boot/boot_serial/src/cbor_decode.c            |  86 +++++++--
+ boot/boot_serial/src/cbor_decode.h            |   5 -
+ boot/boot_serial/src/cbor_encode.c            |  68 +++----
+ boot/boot_serial/src/cbor_encode.h            |   9 +-
+ boot/boot_serial/src/serial_recovery_cbor.c   |  72 ++++---
+ boot/boot_serial/src/serial_recovery_cbor.h   |  18 +-
+ .../src/serial_recovery_cbor_types.h          |  56 ++++++
+ .../src/types_serial_recovery_cbor.h          |   7 +-
+ boot/espressif/port/esp_mcuboot.c             |  27 ++-
+ .../flash_map_backend/flash_map_backend.h     | 141 ++++++++++++++
+ .../include/mcuboot_config/mcuboot_assert.h   |  14 ++
+ .../include/mcuboot_config/mcuboot_config.h   | 181 ++++++++++++++++++
+ .../include/mcuboot_config/mcuboot_logging.h  |  60 ++++++
+ boot/freertos/include/os/os.h                 |   1 +
+ boot/freertos/include/os/os_malloc.h          |  42 ++++
+ boot/freertos/include/port/base64_port.h      |   9 +
+ boot/freertos/include/port/boot_assert_port.h |   7 +
+ boot/freertos/include/port/boot_heap_port.h   |  11 ++
+ boot/freertos/include/port/boot_log_port.h    |   6 +
+ boot/freertos/include/port/boot_serial_port.h |  17 ++
+ .../freertos/include/port/boot_startup_port.h |   7 +
+ boot/freertos/include/port/boot_wdt_port.h    |   8 +
+ boot/freertos/include/port/crc16_port.h       |   9 +
+ boot/freertos/include/port/system_port.h      |  12 ++
+ boot/freertos/include/sysflash/sysflash.h     |  18 ++
+ boot/freertos/keys.c                          | 132 +++++++++++++
+ boot/freertos/main.c                          |  58 ++++++
+ 30 files changed, 1036 insertions(+), 192 deletions(-)
+ create mode 100644 boot/boot_serial/src/serial_recovery_cbor_types.h
+ create mode 100644 boot/freertos/include/flash_map_backend/flash_map_backend.h
+ create mode 100644 boot/freertos/include/mcuboot_config/mcuboot_assert.h
+ create mode 100644 boot/freertos/include/mcuboot_config/mcuboot_config.h
+ create mode 100644 boot/freertos/include/mcuboot_config/mcuboot_logging.h
+ create mode 100644 boot/freertos/include/os/os.h
+ create mode 100644 boot/freertos/include/os/os_malloc.h
+ create mode 100644 boot/freertos/include/port/base64_port.h
+ create mode 100644 boot/freertos/include/port/boot_assert_port.h
+ create mode 100644 boot/freertos/include/port/boot_heap_port.h
+ create mode 100644 boot/freertos/include/port/boot_log_port.h
+ create mode 100644 boot/freertos/include/port/boot_serial_port.h
+ create mode 100644 boot/freertos/include/port/boot_startup_port.h
+ create mode 100644 boot/freertos/include/port/boot_wdt_port.h
+ create mode 100644 boot/freertos/include/port/crc16_port.h
+ create mode 100644 boot/freertos/include/port/system_port.h
+ create mode 100644 boot/freertos/include/sysflash/sysflash.h
+ create mode 100644 boot/freertos/keys.c
+ create mode 100644 boot/freertos/main.c
+
+diff --git a/boot/boot_serial/src/boot_serial.c b/boot/boot_serial/src/boot_serial.c
+index 914167e..ebbfde4 100644
+--- a/boot/boot_serial/src/boot_serial.c
++++ b/boot/boot_serial/src/boot_serial.c
+@@ -34,9 +34,15 @@
+ #include <drivers/flash.h>
+ #include <sys/crc.h>
+ #include <sys/base64.h>
++#include <hal/hal_flash.h>
++#elif __OTHER_PORT__
++#include <port/system_port.h>
++#include <port/crc16_port.h>
++#include <port/base64_port.h>
+ #else
+ #include <bsp/bsp.h>
+ #include <hal/hal_system.h>
++#include <hal/hal_flash.h>
+ #include <os/endian.h>
+ #include <os/os_cputime.h>
+ #include <crc/crc16.h>
+@@ -44,7 +50,6 @@
+ #endif /* __ZEPHYR__ */
+ 
+ #include <flash_map_backend/flash_map_backend.h>
+-#include <hal/hal_flash.h>
+ #include <os/os.h>
+ #include <os/os_malloc.h>
+ 
+@@ -79,6 +84,13 @@ BOOT_LOG_MODULE_DECLARE(mcuboot);
+ 
+ #define ntohs(x) sys_be16_to_cpu(x)
+ #define htons(x) sys_cpu_to_be16(x)
++#elif __OTHER_PORT__
++
++#define CRC16_INITIAL_CRC       0       /* what to seed crc16 with */
++#define BASE64_ENCODE_SIZE(in_size) ((((((in_size) - 1) / 3) * 4) + 4) + 1)
++
++#define ntohs(x) system_port_ntohs(x)
++#define htons(x) system_port_htons(x)
+ #endif
+ 
+ #if (BOOT_IMAGE_NUMBER > 1)
+@@ -472,6 +484,9 @@ bs_reset(char *buf, int len)
+     k_busy_wait(250000);
+ #endif
+     sys_reboot(SYS_REBOOT_COLD);
++#elif __OTHER_PORT__
++    system_port_usleep( 250000 );
++    system_port_reset();
+ #else
+     os_cputime_delay_usecs(250000);
+     hal_system_reset();
+@@ -559,6 +574,9 @@ boot_serial_output(void)
+     crc =  crc16((uint8_t *)bs_hdr, sizeof(*bs_hdr), CRC_CITT_POLYMINAL,
+                  CRC16_INITIAL_CRC, false);
+     crc =  crc16(data, len, CRC_CITT_POLYMINAL, crc, true);
++#elif __OTHER_PORT__
++    crc = crc16_port_ccitt(CRC16_INITIAL_CRC, (char *)bs_hdr, sizeof(*bs_hdr));
++    crc = crc16_port_ccitt(crc, data, len);
+ #else
+     crc = crc16_ccitt(CRC16_INITIAL_CRC, bs_hdr, sizeof(*bs_hdr));
+     crc = crc16_ccitt(crc, data, len);
+@@ -582,6 +600,10 @@ boot_serial_output(void)
+     size_t enc_len;
+     base64_encode(encoded_buf, sizeof(encoded_buf), &enc_len, buf, totlen);
+     totlen = enc_len;
++#elif __OTHER_PORT__
++    size_t enc_len;
++    base64_port_encode(encoded_buf, sizeof(encoded_buf), &enc_len, buf, totlen);
++    totlen = enc_len;
+ #else
+     totlen = base64_encode(buf, totlen, encoded_buf, 1);
+ #endif
+@@ -606,6 +628,12 @@ boot_serial_in_dec(char *in, int inlen, char *out, int *out_off, int maxout)
+     if (err) {
+         return -1;
+     }
++#elif __OTHER_PORT__
++    int err;
++    err = base64_port_decode( &out[*out_off], maxout - *out_off, &rc, in, inlen - 1);
++    if (err) {
++        return -1;
++    }
+ #else
+     if (*out_off + base64_decode_len(in) >= maxout) {
+         return -1;
+@@ -633,6 +661,8 @@ boot_serial_in_dec(char *in, int inlen, char *out, int *out_off, int maxout)
+     out += sizeof(uint16_t);
+ #ifdef __ZEPHYR__
+     crc = crc16(out, len, CRC_CITT_POLYMINAL, CRC16_INITIAL_CRC, true);
++#elif __OTHER_PORT__
++    crc = crc16_port_ccitt(CRC16_INITIAL_CRC, out, len);
+ #else
+     crc = crc16_ccitt(CRC16_INITIAL_CRC, out, len);
+ #endif
+diff --git a/boot/boot_serial/src/cbor_common.c b/boot/boot_serial/src/cbor_common.c
+index 8a4cd9c..7212aed 100644
+--- a/boot/boot_serial/src/cbor_common.c
++++ b/boot/boot_serial/src/cbor_common.c
+@@ -1,8 +1,3 @@
+-/*
+- * This file has been copied from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+ /*
+  * Copyright (c) 2020 Nordic Semiconductor ASA
+  *
+@@ -18,14 +13,22 @@
+ _Static_assert((sizeof(size_t) == sizeof(void *)),
+ 	"This code needs size_t to be the same length as pointers.");
+ 
++_Static_assert((sizeof(cbor_state_t) >= sizeof(cbor_state_backups_t)),
++	"This code needs cbor_state_t to be at least as large as cbor_backups_t.");
++
+ bool new_backup(cbor_state_t *state, uint32_t new_elem_count)
+ {
+-	if ((state->backups->current_backup + 1)
+-		>= state->backups->num_backups) {
++	if (!state->backups || ((state->backups->current_backup)
++		>= state->backups->num_backups)) {
+ 		FAIL();
+ 	}
+ 
+-	uint32_t i = ++(state->backups->current_backup);
++	(state->backups->current_backup)++;
++
++	/* use the backup at current_backup - 1, since otherwise, the 0th
++	 * backup would be unused. */
++	uint32_t i = (state->backups->current_backup) - 1;
++
+ 	memcpy(&state->backups->backup_list[i], state,
+ 		sizeof(cbor_state_t));
+ 
+@@ -35,24 +38,26 @@ bool new_backup(cbor_state_t *state, uint32_t new_elem_count)
+ }
+ 
+ 
+-bool restore_backup(cbor_state_t *state, uint32_t flags,
++bool process_backup(cbor_state_t *state, uint32_t flags,
+ 		uint32_t max_elem_count)
+ {
+ 	const uint8_t *payload = state->payload;
+ 	const uint32_t elem_count = state->elem_count;
+ 
+-	if (state->backups->current_backup == 0) {
++	if (!state->backups || (state->backups->current_backup == 0)) {
+ 		FAIL();
+ 	}
+ 
+ 	if (flags & FLAG_RESTORE) {
+-		uint32_t i = state->backups->current_backup;
++		/* use the backup at current_backup - 1, since otherwise, the
++		 * 0th backup would be unused. */
++		uint32_t i = state->backups->current_backup - 1;
+ 
+ 		memcpy(state, &state->backups->backup_list[i],
+ 			sizeof(cbor_state_t));
+ 	}
+ 
+-	if (flags & FLAG_DISCARD) {
++	if (flags & FLAG_CONSUME) {
+ 		state->backups->current_backup--;
+ 	}
+ 
+@@ -81,7 +86,7 @@ bool union_start_code(cbor_state_t *state)
+ 
+ bool union_elem_code(cbor_state_t *state)
+ {
+-	if (!restore_backup(state, FLAG_RESTORE, state->elem_count)) {
++	if (!process_backup(state, FLAG_RESTORE, state->elem_count)) {
+ 		FAIL();
+ 	}
+ 	return true;
+@@ -89,37 +94,24 @@ bool union_elem_code(cbor_state_t *state)
+ 
+ bool union_end_code(cbor_state_t *state)
+ {
+-	if (!restore_backup(state, FLAG_DISCARD, state->elem_count)) {
++	if (!process_backup(state, FLAG_CONSUME, state->elem_count)) {
+ 		FAIL();
+ 	}
+ 	return true;
+ }
+ 
+-bool entry_function(const uint8_t *payload, uint32_t payload_len,
+-		const void *struct_ptr, uint32_t *payload_len_out,
+-		cbor_encoder_t func, uint32_t elem_count, uint32_t num_backups)
++void new_state(cbor_state_t *state_array, uint32_t n_states,
++		const uint8_t *payload, uint32_t payload_len, uint32_t elem_count)
+ {
+-	cbor_state_t state = {
+-		.payload = payload,
+-		.payload_end = payload + payload_len,
+-		.elem_count = elem_count,
+-	};
+-
+-	cbor_state_t state_backups[num_backups + 1];
+-
+-	cbor_state_backups_t backups = {
+-		.backup_list = state_backups,
+-		.current_backup = 0,
+-		.num_backups = num_backups + 1,
+-	};
+-
+-	state.backups = &backups;
+-
+-	bool result = func(&state, struct_ptr);
+-
+-	if (result && (payload_len_out != NULL)) {
+-		*payload_len_out = MIN(payload_len,
+-				(size_t)state.payload - (size_t)payload);
++	state_array[0].payload = payload;
++	state_array[0].payload_end = payload + payload_len;
++	state_array[0].elem_count = elem_count;
++	state_array[0].backups = NULL;
++	if (n_states > 2) {
++		/* Use the last state as a cbor_state_backups_t object. */
++		state_array[0].backups = (cbor_state_backups_t *)&state_array[n_states - 1];
++		state_array[0].backups->backup_list = &state_array[1];
++		state_array[0].backups->num_backups = n_states - 2;
++		state_array[0].backups->current_backup = 0;
+ 	}
+-	return result;
+ }
+diff --git a/boot/boot_serial/src/cbor_common.h b/boot/boot_serial/src/cbor_common.h
+index e652908..587b560 100644
+--- a/boot/boot_serial/src/cbor_common.h
++++ b/boot/boot_serial/src/cbor_common.h
+@@ -1,8 +1,3 @@
+-/*
+- * This file has been copied from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+ /*
+  * Copyright (c) 2020 Nordic Semiconductor ASA
+  *
+@@ -27,8 +22,8 @@ typedef struct
+ 
+ #ifdef CDDL_CBOR_VERBOSE
+ #include <sys/printk.h>
+-#define cbor_trace() (printk("bytes left: %d, byte: 0x%x, elem_count: 0x%zx, %s:%d\n",\
+-	(uint32_t)state->payload_end - (uint32_t)state->payload, *state->payload, state->elem_count,\
++#define cbor_trace() (printk("bytes left: %zu, byte: 0x%x, elem_count: 0x%x, %s:%d\n",\
++	(size_t)state->payload_end - (size_t)state->payload, *state->payload, state->elem_count,\
+ 	__FILE__, __LINE__))
+ #define cbor_assert(expr, ...) \
+ do { \
+@@ -123,23 +118,43 @@ do {\
+ 
+ #define BOOL_TO_PRIM 20 ///! In CBOR, false/true have the values 20/21
+ 
+-#define FLAG_RESTORE 1UL
+-#define FLAG_DISCARD 2UL
+-#define FLAG_TRANSFER_PAYLOAD 4UL
++#define FLAG_RESTORE 1UL ///! Restore from the backup.
++#define FLAG_CONSUME 2UL ///! Consume the backup.
++#define FLAG_TRANSFER_PAYLOAD 4UL ///! Keep the pre-restore payload after restoring.
+ 
++/** Take a backup of the current state. Overwrite the current elem_count. */
+ bool new_backup(cbor_state_t *state, uint32_t new_elem_count);
+ 
+-bool restore_backup(cbor_state_t *state, uint32_t flags,
+-		uint32_t max_elem_count);
++/** Consult the most recent backup. In doing so, check whether elem_count is
++ *  within max_elem_count, and return the result.
++ *  Also, take action based on the flags (See FLAG_*).
++ */
++bool process_backup(cbor_state_t *state, uint32_t flags, uint32_t max_elem_count);
+ 
++/** Convenience function for starting encoding/decoding of a union.
++ *  Takes a new backup.
++ */
+ bool union_start_code(cbor_state_t *state);
+ 
++/** Convenience function before encoding/decoding one element of a union.
++ *  Restores the backup, without consuming it.
++ */
+ bool union_elem_code(cbor_state_t *state);
+ 
++/** Convenience function before encoding/decoding one element of a union.
++ *  Consumes the backup without restoring it.
++ */
+ bool union_end_code(cbor_state_t *state);
+ 
+-bool entry_function(const uint8_t *payload, uint32_t payload_len,
+-		const void *struct_ptr, uint32_t *payload_len_out,
+-		cbor_encoder_t func, uint32_t elem_count, uint32_t num_backups);
++/** Initialize a state with backups.
++ *  One of the states in the array is used as a cbor_state_backups_t object.
++ *  This means that you get a state with (n_states - 2) backups.
++ *  It also means that (n_states = 2) is an invalid input, which is handled as
++ *  if (n_states = 1).
++ *  payload, payload_len, and elem_count are used to initialize the first state.
++ *  in the array, which is the state that can be passed to cbor functions.
++ */
++void new_state(cbor_state_t *state_array, uint32_t n_states,
++		const uint8_t *payload, uint32_t payload_len, uint32_t elem_count);
+ 
+ #endif /* CBOR_COMMON_H__ */
+diff --git a/boot/boot_serial/src/cbor_decode.c b/boot/boot_serial/src/cbor_decode.c
+index 9707729..65049e2 100644
+--- a/boot/boot_serial/src/cbor_decode.c
++++ b/boot/boot_serial/src/cbor_decode.c
+@@ -1,8 +1,3 @@
+-/*
+- * This file has been copied from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+ /*
+  * Copyright (c) 2020 Nordic Semiconductor ASA
+  *
+@@ -38,6 +33,20 @@ static uint32_t additional_len(uint8_t additional)
+ /** Extract the additional info, i.e. the last 5 bits of the header byte. */
+ #define ADDITIONAL(header_byte) ((header_byte) & 0x1F)
+ 
++/** The value where the INDET_LEN bit (bit 31) is set, and elem_count is 0.
++ *  This represents the minimum value elem_count can have for indeterminate
++ *  length arrays. It also functions as a mask for the INDET_LEN bit.
++ */
++#define MIN_INDET_LEN_ELEM_COUNT 0x80000000
++
++/** Check the most significant bit to see if we are processing an indeterminate
++ *  length array.
++ */
++#define INDET_LEN(elem_count) (elem_count >= MIN_INDET_LEN_ELEM_COUNT)
++
++/** Initial value for elem_count for indeterminate length arrays. */
++#define INDET_LEN_ELEM_COUNT 0xFFFFFFF0
++
+ 
+ #define FAIL_AND_DECR_IF(expr) \
+ do {\
+@@ -86,6 +95,7 @@ static bool value_extract(cbor_state_t *state,
+ 	cbor_assert(result != NULL, NULL);
+ 
+ 	FAIL_IF((state->elem_count == 0) \
++		|| (state->elem_count == MIN_INDET_LEN_ELEM_COUNT) \
+ 		|| (state->payload >= state->payload_end));
+ 
+ 	uint8_t *u8_result  = (uint8_t *)result;
+@@ -278,8 +288,8 @@ bool bstrx_cbor_end_decode(cbor_state_t *state)
+ 	if (state->payload != state->payload_end) {
+ 		FAIL();
+ 	}
+-	if (!restore_backup(state,
+-			FLAG_RESTORE | FLAG_DISCARD | FLAG_TRANSFER_PAYLOAD,
++	if (!process_backup(state,
++			FLAG_RESTORE | FLAG_CONSUME | FLAG_TRANSFER_PAYLOAD,
+ 			0xFFFFFFFF)) {
+ 		FAIL();
+ 	}
+@@ -352,8 +362,17 @@ static bool list_map_start_decode(cbor_state_t *state,
+ 		FAIL();
+ 	}
+ 
+-	if (!uint32_decode(state, &new_elem_count)) {
+-		FAIL();
++	if (ADDITIONAL(*state->payload) == 0x1F) {
++		/* Indeterminate length array. */
++		new_elem_count = INDET_LEN_ELEM_COUNT;
++		state->payload++;
++	} else {
++		if (!uint32_decode(state, &new_elem_count)) {
++			FAIL();
++		} else if (INDET_LEN(new_elem_count)) {
++			/* The new elem_count interferes with the INDET_LEN bit. */
++			FAIL_RESTORE();
++		}
+ 	}
+ 
+ 	if (!new_backup(state, new_elem_count)) {
+@@ -374,18 +393,39 @@ bool map_start_decode(cbor_state_t *state)
+ {
+ 	bool ret = list_map_start_decode(state, CBOR_MAJOR_TYPE_MAP);
+ 
+-	if (ret) {
++	if (ret && !INDET_LEN(state->elem_count)) {
++		if (INDET_LEN(state->elem_count * 2)) {
++			/* The new elem_count interferes with the INDET_LEN bit. */
++			FAIL_RESTORE();
++		}
+ 		state->elem_count *= 2;
+ 	}
+ 	return ret;
+ }
+ 
+ 
++static bool array_end_expect(cbor_state_t *state)
++{
++	FAIL_IF(state->payload >= state->payload_end);
++	FAIL_IF(*state->payload != 0xFF);
++
++	state->payload++;
++	return true;
++}
++
++
+ bool list_map_end_decode(cbor_state_t *state)
+ {
+-	if (!restore_backup(state,
+-			FLAG_RESTORE | FLAG_DISCARD | FLAG_TRANSFER_PAYLOAD,
+-			0)) {
++	uint32_t max_elem_count = 0;
++	if (INDET_LEN(state->elem_count)) {
++		if (!array_end_expect(state)) {
++			FAIL();
++		}
++		max_elem_count = 0xFFFFFFFF;
++	}
++	if (!process_backup(state,
++			FLAG_RESTORE | FLAG_CONSUME | FLAG_TRANSFER_PAYLOAD,
++			max_elem_count)) {
+ 		FAIL();
+ 	}
+ 
+@@ -453,7 +493,13 @@ bool boolx_decode(cbor_state_t *state, bool *result)
+ 	if (!primx_decode(state, &tmp_result)) {
+ 		FAIL();
+ 	}
+-	(*result) = tmp_result - BOOL_TO_PRIM;
++
++	tmp_result -= BOOL_TO_PRIM;
++
++	if (tmp_result > 1) {
++		FAIL_RESTORE();
++	}
++	(*result) = tmp_result;
+ 
+ 	cbor_print("boolval: %u\r\n", *result);
+ 	return true;
+@@ -514,18 +560,22 @@ bool any_decode(cbor_state_t *state, void *result)
+ 	uint8_t major_type = MAJOR_TYPE(*state->payload);
+ 	uint32_t value;
+ 	uint32_t num_decode;
+-	void *null_result = NULL;
+ 	uint32_t temp_elem_count;
+ 	uint8_t const *payload_bak;
+ 
+ 	if (!value_extract(state, &value, sizeof(value))) {
+ 		/* Can happen because of elem_count (or payload_end) */
++		/* Note: Indeterminate length arrays are not supported in any_decode */
+ 		FAIL();
+ 	}
+ 
+ 	switch (major_type) {
+ 		case CBOR_MAJOR_TYPE_BSTR:
+ 		case CBOR_MAJOR_TYPE_TSTR:
++			/* 'value' is the length of the BSTR or TSTR */
++			if (value > (state->payload_end - state->payload)) {
++				FAIL();
++			}
+ 			(state->payload) += value;
+ 			break;
+ 		case CBOR_MAJOR_TYPE_MAP:
+@@ -537,7 +587,7 @@ bool any_decode(cbor_state_t *state, void *result)
+ 			state->elem_count = value;
+ 			if (!multi_decode(value, value, &num_decode,
+ 					(void *)any_decode, state,
+-					&null_result, 0)) {
++					NULL, 0)) {
+ 				state->elem_count = temp_elem_count;
+ 				state->payload = payload_bak;
+ 				FAIL();
+@@ -604,12 +654,12 @@ bool multi_decode(uint32_t min_decode,
+ 			if (i < min_decode) {
+ 				FAIL();
+ 			} else {
+-				cbor_print("Found %zu elements.\n", i);
++				cbor_print("Found %d elements.\n", i);
+ 			}
+ 			return true;
+ 		}
+ 	}
+-	cbor_print("Found %zu elements.\n", max_decode);
++	cbor_print("Found %d elements.\n", max_decode);
+ 	*num_decode = max_decode;
+ 	return true;
+ }
+diff --git a/boot/boot_serial/src/cbor_decode.h b/boot/boot_serial/src/cbor_decode.h
+index 5bdc800..124da3b 100644
+--- a/boot/boot_serial/src/cbor_decode.h
++++ b/boot/boot_serial/src/cbor_decode.h
+@@ -1,8 +1,3 @@
+-/*
+- * This file has been copied from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+ /*
+  * Copyright (c) 2020 Nordic Semiconductor ASA
+  *
+diff --git a/boot/boot_serial/src/cbor_encode.c b/boot/boot_serial/src/cbor_encode.c
+index d12dc94..550c33b 100644
+--- a/boot/boot_serial/src/cbor_encode.c
++++ b/boot/boot_serial/src/cbor_encode.c
+@@ -1,8 +1,3 @@
+-/*
+- * This file has been copied from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+ /*
+  * Copyright (c) 2020 Nordic Semiconductor ASA
+  *
+@@ -19,24 +14,24 @@
+ _Static_assert((sizeof(size_t) == sizeof(void *)),
+ 	"This code needs size_t to be the same length as pointers.");
+ 
+-uint8_t get_additional(uint32_t len, uint8_t value0)
++static uint8_t log2ceil(uint32_t val)
+ {
+-	switch(len) {
+-		case 0: return value0;
+-		case 1: return 24;
+-		case 2: return 25;
+-		case 3: return 25;
+-		case 4: return 26;
+-		case 5: return 26;
+-		case 6: return 26;
+-		case 7: return 26;
+-		case 8: return 27;
++	switch(val) {
++		case 1: return 0;
++		case 2: return 1;
++		case 3: return 2;
++		case 4: return 2;
+ 	}
+ 
+-	cbor_assert(false, NULL);
++	cbor_assert(false, NULL); /* Should not come here. */
+ 	return 0;
+ }
+ 
++static uint8_t get_additional(uint32_t len, uint8_t value0)
++{
++	return len == 0 ? value0 : (24 + log2ceil(len));
++}
++
+ static bool encode_header_byte(cbor_state_t *state,
+ 	cbor_major_type_t major_type, uint8_t additional)
+ {
+@@ -86,40 +81,23 @@ static bool value_encode_len(cbor_state_t *state, cbor_major_type_t major_type,
+ static uint32_t get_result_len(const void *const input, uint32_t max_result_len)
+ {
+ 	uint8_t *u8_result  = (uint8_t *)input;
+-	size_t i;
++	uint32_t len = max_result_len;
+ 
+-	for (i = 0; i < max_result_len; i++) {
++	for (; len > 0; len--) {
+ #ifdef CONFIG_BIG_ENDIAN
+-		size_t idx = i;
++		if (u8_result[max_result_len - len] != 0) {
+ #else
+-		size_t idx = max_result_len - 1 - i;
++		if (u8_result[len - 1] != 0) {
+ #endif
+-		if (u8_result[idx] != 0) {
+ 			break;
+ 		}
+ 	}
+-	max_result_len -= i;
+-
+-	/* According to specification result length can be encoded on 1, 2, 4
+-	 * or 8 bytes.
+-	 */
+-	cbor_assert(max_result_len <= 8, "Up to 8 bytes can be used to encode length.\n");
+-	size_t encode_byte_cnt = 1;
+-
+-	for (size_t i = 0; i <= 3; i++) {
+-		if (max_result_len <= encode_byte_cnt) {
+-			max_result_len = encode_byte_cnt;
+-			break;
+-		}
+-
+-		encode_byte_cnt *= 2;
+-	}
+-
+-	if ((max_result_len == 1) && (u8_result[0] <= VALUE_IN_HEADER)) {
+-		max_result_len = 0;
++	if ((len == 1) && (u8_result[0] <= VALUE_IN_HEADER)) {
++		len = 0;
+ 	}
+ 
+-	return max_result_len;
++	/* Round up to nearest power of 2. */
++	return len <= 2 ? len : (1 << log2ceil(len));
+ }
+ 
+ 
+@@ -240,7 +218,7 @@ bool bstrx_cbor_end_encode(cbor_state_t *state)
+ {
+ 	const uint8_t *payload = state->payload;
+ 
+-	if (!restore_backup(state, FLAG_RESTORE | FLAG_DISCARD, 0xFFFFFFFF)) {
++	if (!process_backup(state, FLAG_RESTORE | FLAG_CONSUME, 0xFFFFFFFF)) {
+ 		FAIL();
+ 	}
+ 	cbor_string_type_t value;
+@@ -331,7 +309,7 @@ bool list_map_end_encode(cbor_state_t *state, uint32_t max_num,
+ 	uint32_t max_header_len = get_result_len(&max_num, 4);
+ 	uint32_t header_len = get_result_len(&list_count, 4);
+ 
+-	if (!restore_backup(state, FLAG_RESTORE | FLAG_DISCARD, 0xFFFFFFFF)) {
++	if (!process_backup(state, FLAG_RESTORE | FLAG_CONSUME, 0xFFFFFFFF)) {
+ 		FAIL();
+ 	}
+ 
+@@ -442,7 +420,7 @@ bool multi_encode(uint32_t min_encode,
+ 		const void *input,
+ 		uint32_t result_len)
+ {
+-	if (!PTR_VALUE_IN_RANGE(uint32_t, num_encode, NULL, &max_encode)) {
++	if (!PTR_VALUE_IN_RANGE(uint32_t, num_encode, &min_encode, &max_encode)) {
+ 		FAIL();
+ 	}
+ 	for (uint32_t i = 0; i < *num_encode; i++) {
+diff --git a/boot/boot_serial/src/cbor_encode.h b/boot/boot_serial/src/cbor_encode.h
+index 4c53d45..6a936d2 100644
+--- a/boot/boot_serial/src/cbor_encode.h
++++ b/boot/boot_serial/src/cbor_encode.h
+@@ -1,8 +1,3 @@
+-/*
+- * This file has been copied from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+ /*
+  * Copyright (c) 2020 Nordic Semiconductor ASA
+  *
+@@ -55,10 +50,10 @@ bool bstrx_encode(cbor_state_t *state, const cbor_string_type_t *result);
+ bool tstrx_encode(cbor_state_t *state, const cbor_string_type_t *result);
+ 
+ #define tstrx_put(state, string) \
+-	tstrx_encode(state, &(cbor_string_type_t){.value = (const uint8_t *)string, .len = (sizeof(string) - 1)})
++	tstrx_encode(state, &(cbor_string_type_t){.value = (uint8_t*)string, .len = (sizeof(string) - 1)})
+ 
+ #define tstrx_put_term(state, string) \
+-	tstrx_encode(state, &(cbor_string_type_t){.value = (const uint8_t *)string, .len = strlen((const char *)string)})
++	tstrx_encode(state, &(cbor_string_type_t){.value = (uint8_t*)string, .len = strlen(string)})
+ 
+ /** Encode a LIST header.
+  *
+diff --git a/boot/boot_serial/src/serial_recovery_cbor.c b/boot/boot_serial/src/serial_recovery_cbor.c
+index 2561b70..4cd6d6d 100644
+--- a/boot/boot_serial/src/serial_recovery_cbor.c
++++ b/boot/boot_serial/src/serial_recovery_cbor.c
+@@ -1,17 +1,7 @@
+ /*
+- * This file has been generated from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+-/*
+- * Copyright (c) 2021 Nordic Semiconductor ASA
+- *
+- * SPDX-License-Identifier: Apache-2.0
+- */
+-
+-/*
+- * Generated with cddl_gen.py (https://github.com/NordicSemiconductor/cddl-gen)
+- * at: 2021-08-02 17:09:42
++ * Generated using cddl_gen version 0.3.99
++ * https://github.com/NordicSemiconductor/cddl-gen
++ * at: 2021-11-30 17:31:07
+  * Generated with a default_max_qty of 3
+  */
+ 
+@@ -34,20 +24,15 @@ static bool decode_Member(
+ 	cbor_string_type_t tmp_str;
+ 	bool int_res;
+ 
+-	bool tmp_result = (((union_start_code(state) && (int_res = (((((tstrx_expect(state, ((tmp_str.value = (const uint8_t *)"image",
+-    tmp_str.len = sizeof("image") - 1, &tmp_str)))))
++	bool tmp_result = (((union_start_code(state) && (int_res = (((((tstrx_expect(state, ((tmp_str.value = (uint8_t*)"image", tmp_str.len = sizeof("image") - 1, &tmp_str)))))
+ 	&& (intx32_decode(state, (&(*result)._Member_image)))) && (((*result)._Member_choice = _Member_image) || 1))
+-	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (const uint8_t *)"data",
+-    tmp_str.len = sizeof("data") - 1, &tmp_str)))))
++	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (uint8_t*)"data", tmp_str.len = sizeof("data") - 1, &tmp_str)))))
+ 	&& (bstrx_decode(state, (&(*result)._Member_data)))) && (((*result)._Member_choice = _Member_data) || 1)))
+-	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (const uint8_t *)"len",
+-    tmp_str.len = sizeof("len") - 1, &tmp_str)))))
++	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (uint8_t*)"len", tmp_str.len = sizeof("len") - 1, &tmp_str)))))
+ 	&& (intx32_decode(state, (&(*result)._Member_len)))) && (((*result)._Member_choice = _Member_len) || 1)))
+-	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (const uint8_t *)"off",
+-    tmp_str.len = sizeof("off") - 1, &tmp_str)))))
++	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (uint8_t*)"off", tmp_str.len = sizeof("off") - 1, &tmp_str)))))
+ 	&& (intx32_decode(state, (&(*result)._Member_off)))) && (((*result)._Member_choice = _Member_off) || 1)))
+-	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (const uint8_t *)"sha",
+-    tmp_str.len = sizeof("sha") - 1, &tmp_str)))))
++	|| (union_elem_code(state) && ((((tstrx_expect(state, ((tmp_str.value = (uint8_t*)"sha", tmp_str.len = sizeof("sha") - 1, &tmp_str)))))
+ 	&& (bstrx_decode(state, (&(*result)._Member_sha)))) && (((*result)._Member_choice = _Member_sha) || 1)))), union_end_code(state), int_res))));
+ 
+ 	if (!tmp_result)
+@@ -56,13 +41,12 @@ static bool decode_Member(
+ 	return tmp_result;
+ }
+ 
+-static bool decode_Upload(
+-		cbor_state_t *state, struct Upload *result)
++static bool decode_repeated_Upload_members(
++		cbor_state_t *state, struct Upload_members *result)
+ {
+ 	cbor_print("%s\n", __func__);
+-	bool int_res;
+ 
+-	bool tmp_result = (((map_start_decode(state) && (int_res = (multi_decode(1, 5, &(*result)._Upload_members_count, (void *)decode_Member, state, (&(*result)._Upload_members), sizeof(struct Member_))), ((map_end_decode(state)) && int_res)))));
++	bool tmp_result = (((decode_Member(state, (&(*result)._Upload_members)))));
+ 
+ 	if (!tmp_result)
+ 		cbor_trace();
+@@ -70,25 +54,37 @@ static bool decode_Upload(
+ 	return tmp_result;
+ }
+ 
++static bool decode_Upload(
++		cbor_state_t *state, struct Upload *result)
++{
++	cbor_print("%s\n", __func__);
++	bool int_res;
++
++	bool tmp_result = (((map_start_decode(state) && (int_res = (multi_decode(1, 5, &(*result)._Upload_members_count, (void *)decode_repeated_Upload_members, state, (&(*result)._Upload_members), sizeof(struct Upload_members))), ((map_end_decode(state)) && int_res)))));
+ 
++	if (!tmp_result)
++		cbor_trace();
+ 
+-__attribute__((unused)) static bool type_test_decode_Upload(
+-		struct Upload *result)
+-{
+-	/* This function should not be called, it is present only to test that
+-	 * the types of the function and struct match, since this information
+-	 * is lost with the casts in the entry function.
+-	 */
+-	return decode_Upload(NULL, result);
++	return tmp_result;
+ }
+ 
+ 
++
+ bool cbor_decode_Upload(
+ 		const uint8_t *payload, uint32_t payload_len,
+ 		struct Upload *result,
+ 		uint32_t *payload_len_out)
+ {
+-	return entry_function(payload, payload_len, (const void *)result,
+-		payload_len_out, (void *)decode_Upload,
+-		1, 2);
++	cbor_state_t states[4];
++
++	new_state(states, sizeof(states) / sizeof(cbor_state_t), payload, payload_len, 1);
++
++	bool ret = decode_Upload(states, result);
++
++	if (ret && (payload_len_out != NULL)) {
++		*payload_len_out = MIN(payload_len,
++				(size_t)states[0].payload - (size_t)payload);
++	}
++
++	return ret;
+ }
+diff --git a/boot/boot_serial/src/serial_recovery_cbor.h b/boot/boot_serial/src/serial_recovery_cbor.h
+index f167d9b..ff4ce79 100644
+--- a/boot/boot_serial/src/serial_recovery_cbor.h
++++ b/boot/boot_serial/src/serial_recovery_cbor.h
+@@ -1,17 +1,7 @@
+ /*
+- * This file has been generated from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+-/*
+- * Copyright (c) 2021 Nordic Semiconductor ASA
+- *
+- * SPDX-License-Identifier: Apache-2.0
+- */
+-
+-/*
+- * Generated with cddl_gen.py (https://github.com/NordicSemiconductor/cddl-gen)
+- * at: 2021-08-02 17:09:42
++ * Generated using cddl_gen version 0.3.99
++ * https://github.com/NordicSemiconductor/cddl-gen
++ * at: 2021-11-30 17:31:07
+  * Generated with a default_max_qty of 3
+  */
+ 
+@@ -23,7 +13,7 @@
+ #include <stddef.h>
+ #include <string.h>
+ #include "cbor_decode.h"
+-#include "types_serial_recovery_cbor.h"
++#include "serial_recovery_cbor_types.h"
+ 
+ #if DEFAULT_MAX_QTY != 3
+ #error "The type file was generated with a different default_max_qty than this file"
+diff --git a/boot/boot_serial/src/serial_recovery_cbor_types.h b/boot/boot_serial/src/serial_recovery_cbor_types.h
+new file mode 100644
+index 0000000..33b396f
+--- /dev/null
++++ b/boot/boot_serial/src/serial_recovery_cbor_types.h
+@@ -0,0 +1,56 @@
++/*
++ * Generated using cddl_gen version 0.3.99
++ * https://github.com/NordicSemiconductor/cddl-gen
++ * at: 2021-11-30 17:31:07
++ * Generated with a default_max_qty of 3
++ */
++
++#ifndef SERIAL_RECOVERY_CBOR_TYPES_H__
++#define SERIAL_RECOVERY_CBOR_TYPES_H__
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <string.h>
++#include "cbor_decode.h"
++
++#define DEFAULT_MAX_QTY 3
++
++struct Member_ {
++ 	union {
++		struct {
++			int32_t _Member_image;
++		};
++		struct {
++			cbor_string_type_t _Member_data;
++		};
++		struct {
++			int32_t _Member_len;
++		};
++		struct {
++			int32_t _Member_off;
++		};
++		struct {
++			cbor_string_type_t _Member_sha;
++		};
++	};
++	enum {
++		_Member_image,
++		_Member_data,
++		_Member_len,
++		_Member_off,
++		_Member_sha,
++	} _Member_choice;
++};
++
++struct Upload_members {
++ 	struct Member_ _Upload_members;
++};
++
++struct Upload {
++ 	struct Upload_members _Upload_members[5];
++	uint32_t _Upload_members_count;
++};
++
++
++#endif /* SERIAL_RECOVERY_CBOR_TYPES_H__ */
+diff --git a/boot/boot_serial/src/types_serial_recovery_cbor.h b/boot/boot_serial/src/types_serial_recovery_cbor.h
+index 8856017..3a1f3f3 100644
+--- a/boot/boot_serial/src/types_serial_recovery_cbor.h
++++ b/boot/boot_serial/src/types_serial_recovery_cbor.h
+@@ -1,11 +1,6 @@
+-/*
+- * This file has been generated from the cddl-gen submodule.
+- * Commit 9f77837f9950da1633d22abf6181a830521a6688
+- */
+-
+ /*
+  * Generated with cddl_gen.py (https://github.com/NordicSemiconductor/cddl-gen)
+- * at: 2021-08-02 17:09:42
++ * at: 2021-11-30 17:27:56
+  * Generated with a default_max_qty of 3
+  */
+ 
+diff --git a/boot/espressif/port/esp_mcuboot.c b/boot/espressif/port/esp_mcuboot.c
+index a80a859..dd7d812 100644
+--- a/boot/espressif/port/esp_mcuboot.c
++++ b/boot/espressif/port/esp_mcuboot.c
+@@ -28,6 +28,9 @@
+ 
+ extern int ets_printf(const char *fmt, ...);
+ 
++/* Max MTU for boot_serial. Unfortunately can't be shared as it's not exposed in a header */
++static uint8_t __attribute__((aligned(4))) align_buf[512] = { 0 };
++
+ static const struct flash_area bootloader = {
+     .fa_id = FLASH_AREA_BOOTLOADER,
+     .fa_device_id = FLASH_DEVICE_INTERNAL_FLASH,
+@@ -89,7 +92,7 @@ void flash_area_close(const struct flash_area *area)
+ int flash_area_read(const struct flash_area *fa, uint32_t off, void *dst,
+                     uint32_t len)
+ {
+-    uint32_t internal_data = 0, read_len = 0;
++    uint32_t read_len = 0;
+     void *read_ptr;
+     if (fa->fa_device_id != FLASH_DEVICE_INTERNAL_FLASH) {
+         return -1;
+@@ -101,13 +104,15 @@ int flash_area_read(const struct flash_area *fa, uint32_t off, void *dst,
+         MCUBOOT_LOG_ERR("%s: Out of Bounds (0x%x vs 0x%x)", __func__, end_offset, fa->fa_size);
+         return -1;
+     }
+-    read_len = (len < 4) ? sizeof(uint32_t) : len;
+-    read_ptr = (len < 4) ? (void *)&internal_data : dst;
++
++    /* Should have check to make sure than len can fit in static buffer */
++    read_len = (len % 4) ? ((len + 3) & ~0x3) : len;
++    read_ptr = ((uint32_t)dst % 4 || len % 4) ? (void *)&align_buf : dst;
+     if (bootloader_flash_read(fa->fa_off + off, read_ptr, read_len, true) != ESP_OK) {
+         MCUBOOT_LOG_ERR("%s: Flash read failed", __func__);
+         return -1;
+     }
+-    if (len < 4) {
++    if ( dst != read_ptr ) {
+         memcpy(dst, read_ptr, len);
+     }
+     return 0;
+@@ -138,6 +143,20 @@ int flash_area_write(const struct flash_area *fa, uint32_t off, const void *src,
+         write_len = sizeof(uint32_t);
+     }
+ 
++    if( (uint32_t)write_ptr % 4 )
++    {
++        if( write_len <= sizeof(align_buf) )
++        {
++            memcpy( align_buf, src, write_len );
++            write_ptr = (void *)align_buf;
++        }
++        else
++        {
++            MCUBOOT_LOG_DBG("Attempt to write with unaligned src buffer which was too long to fix. %d > %d", write_len, sizeof(align_buf));
++            return -1;
++        }
++    }
++
+     if (bootloader_flash_write(start_addr, write_ptr, write_len, false) != ESP_OK) {
+         MCUBOOT_LOG_ERR("%s: Flash write failed", __func__);
+         return -1;
+diff --git a/boot/freertos/include/flash_map_backend/flash_map_backend.h b/boot/freertos/include/flash_map_backend/flash_map_backend.h
+new file mode 100644
+index 0000000..d805f41
+--- /dev/null
++++ b/boot/freertos/include/flash_map_backend/flash_map_backend.h
+@@ -0,0 +1,141 @@
++#ifndef _FLASH_MAP_BACKEND_H_
++#define _FLASH_MAP_BACKEND_H_
++
++/**
++ *
++ * Provides abstraction of flash regions for type of use.
++ * I.e. dude where's my image?
++ *
++ * System will contain a map which contains flash areas. Every
++ * region will contain flash identifier, offset within flash and length.
++ *
++ * 1. This system map could be in a file within filesystem (Initializer
++ * must know/figure out where the filesystem is at).
++ * 2. Map could be at fixed location for project (compiled to code)
++ * 3. Map could be at specific place in flash (put in place at mfg time).
++ *
++ * Note that the map you use must be valid for BSP it's for,
++ * match the linker scripts when platform executes from flash,
++ * and match the target offset specified in download script.
++ */
++#include <inttypes.h>
++
++/**
++ * @brief Structure describing an area on a flash device.
++ *
++ * Multiple flash devices may be available in the system, each of
++ * which may have its own areas. For this reason, flash areas track
++ * which flash device they are part of.
++ */
++struct flash_area {
++    /**
++     * This flash area's ID; unique in the system.
++     */
++    uint8_t fa_id;
++
++    /**
++     * ID of the flash device this area is a part of.
++     */
++    uint8_t fa_device_id;
++
++    uint16_t pad16;
++
++    /**
++     * This area's offset, relative to the beginning of its flash
++     * device's storage.
++     */
++    uint32_t fa_off;
++
++    /**
++     * This area's size, in bytes.
++     */
++    uint32_t fa_size;
++};
++
++/**
++ * @brief Structure describing a sector within a flash area.
++ *
++ * Each sector has an offset relative to the start of its flash area
++ * (NOT relative to the start of its flash device), and a size. A
++ * flash area may contain sectors with different sizes.
++ */
++struct flash_sector {
++    /**
++     * Offset of this sector, from the start of its flash area (not device).
++     */
++    uint32_t fs_off;
++
++    /**
++     * Size of this sector, in bytes.
++     */
++    uint32_t fs_size;
++};
++
++/*< Opens the area for use. id is one of the `fa_id`s */
++int     flash_area_open(uint8_t id, const struct flash_area **);
++
++
++void    flash_area_close(const struct flash_area *);
++
++
++/*< Reads `len` bytes of flash memory at `off` to the buffer at `dst` */
++int     flash_area_read(const struct flash_area *, uint32_t off, void *dst,
++                     uint32_t len);
++
++/*< Writes `len` bytes of flash memory at `off` from the buffer at `src` */
++int     flash_area_write(const struct flash_area *, uint32_t off,
++                     const void *src, uint32_t len);
++
++/*< Erases `len` bytes of flash memory at `off` */
++int     flash_area_erase(const struct flash_area *, uint32_t off, uint32_t len);
++
++/*< Returns this `flash_area`s alignment */
++size_t flash_area_align(const struct flash_area *);
++
++/*< What is value is read from erased flash bytes. */
++uint8_t flash_area_erased_val(const struct flash_area *);
++
++/*< Given flash area ID, return info about sectors within the area. */
++int     flash_area_get_sectors(int fa_id, uint32_t *count,
++                     struct flash_sector *sectors);
++
++/*< Returns the `fa_id` for slot, where slot is 0 (primary) or 1 (secondary).
++    `image_index` (0 or 1) is the index of the image. Image index is
++    relevant only when multi-image support support is enabled */
++int     flash_area_id_from_multi_image_slot(int image_index, int slot);
++
++/*< Returns the slot (0 for primary or 1 for secondary), for the supplied
++    `image_index` and `area_id`. `area_id` is unique and is represented by
++    `fa_id` in the `flash_area` struct. */
++int     flash_area_id_to_multi_image_slot(int image_index, int area_id);
++
++int flash_area_id_from_image_slot(int slot);
++
++static inline uint32_t flash_area_get_off(const struct flash_area *fa)
++{
++	return (uint32_t)fa->fa_off;
++}
++
++static inline uint32_t flash_area_get_size(const struct flash_area *fa)
++{
++	return (uint32_t)fa->fa_size;
++}
++
++static inline uint8_t flash_area_get_id(const struct flash_area *fa)
++{
++	return fa->fa_id;
++}
++
++uint8_t flash_area_get_device_id(const struct flash_area *fa);
++
++static inline uint32_t flash_sector_get_off(const struct flash_sector *fs)
++{
++	return fs->fs_off;
++}
++
++static inline uint32_t flash_sector_get_size(const struct flash_sector *fs)
++{
++	return fs->fs_size;
++}
++
++#endif
+diff --git a/boot/freertos/include/mcuboot_config/mcuboot_assert.h b/boot/freertos/include/mcuboot_config/mcuboot_assert.h
+new file mode 100644
+index 0000000..e646d18
+--- /dev/null
++++ b/boot/freertos/include/mcuboot_config/mcuboot_assert.h
+@@ -0,0 +1,14 @@
++
++#pragma once
++
++#include "port/boot_assert_port.h"
++
++#ifdef assert
++#undef assert
++#endif
++#define assert(arg)                                                   \
++    do {                                                              \
++        if (!(arg)) {                                                 \
++            boot_port_assert_handler( __FILE__, __LINE__, __func__ ); \
++        }                                                             \
++    } while(0)
+diff --git a/boot/freertos/include/mcuboot_config/mcuboot_config.h b/boot/freertos/include/mcuboot_config/mcuboot_config.h
+new file mode 100644
+index 0000000..9abad80
+--- /dev/null
++++ b/boot/freertos/include/mcuboot_config/mcuboot_config.h
+@@ -0,0 +1,181 @@
++/*
++ * Copyright (c) 2018 Open Source Foundries Limited
++ * Copyright (c) 2019 Arm Limited
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#ifndef __MCUBOOT_CONFIG_H__
++#define __MCUBOOT_CONFIG_H__
++
++/*
++ * Template configuration file for MCUboot.
++ *
++ * When porting MCUboot to a new target, copy it somewhere that your
++ * include path can find it as mcuboot_config/mcuboot_config.h, and
++ * make adjustments to suit your platform.
++ *
++ * For examples, see:
++ *
++ * boot/zephyr/include/mcuboot_config/mcuboot_config.h
++ * boot/mynewt/mcuboot_config/include/mcuboot_config/mcuboot_config.h
++ */
++
++/*
++ * Signature types
++ *
++ * You must choose exactly one signature type.
++ */
++
++/* Uncomment for RSA signature support */
++//#define MCUBOOT_SIGN_RSA
++//#define MCUBOOT_SIGN_RSA_LEN 2048
++
++/* Uncomment for ECDSA signatures using curve P-256. */
++//#define MCUBOOT_SIGN_EC256
++
++
++/*
++ * Upgrade mode
++ *
++ * The default is to support A/B image swapping with rollback.  Other modes
++ * with simpler code path, which only supports overwriting the existing image
++ * with the update image or running the newest image directly from its flash
++ * partition, are also available.
++ *
++ * You can enable only one mode at a time from the list below to override
++ * the default upgrade mode.
++ */
++
++/* Uncomment to enable the overwrite-only code path. */
++//#define MCUBOOT_OVERWRITE_ONLY
++
++#ifdef MCUBOOT_OVERWRITE_ONLY
++/* Uncomment to only erase and overwrite those primary slot sectors needed
++ * to install the new image, rather than the entire image slot. */
++/* #define MCUBOOT_OVERWRITE_ONLY_FAST */
++#endif
++
++/* Uncomment to enable the direct-xip code path. */
++/* #define MCUBOOT_DIRECT_XIP */
++/* Uncomment to enable the revert mechanism in direct-xip mode. */
++/* #define MCUBOOT_DIRECT_XIP_REVERT */
++
++/* Uncomment to enable the ram-load code path. */
++/* #define MCUBOOT_RAM_LOAD */
++
++/*
++ * Cryptographic settings
++ *
++ * You must choose between mbedTLS and Tinycrypt as source of
++ * cryptographic primitives. Other cryptographic settings are also
++ * available.
++ */
++
++/* Uncomment to use ARM's mbedTLS cryptographic primitives */
++//#define MCUBOOT_USE_MBED_TLS
++/* Uncomment to use Tinycrypt's. */
++#define MCUBOOT_USE_TINYCRYPT
++
++/*
++ * Always check the signature of the image in the primary slot before booting,
++ * even if no upgrade was performed. This is recommended if the boot
++ * time penalty is acceptable.
++ */
++#define MCUBOOT_VALIDATE_PRIMARY_SLOT
++
++/*
++ * Flash abstraction
++ */
++
++/* Uncomment if your flash map API supports flash_area_get_sectors().
++ * See the flash APIs for more details. */
++#define MCUBOOT_USE_FLASH_AREA_GET_SECTORS
++
++/* Default maximum number of flash sectors per image slot; change
++ * as desirable. */
++#define MCUBOOT_MAX_IMG_SECTORS 256
++
++/* Default number of separately updateable images; change in case of
++ * multiple images. */
++#define MCUBOOT_IMAGE_NUMBER 1
++
++/*
++ * Logging
++ */
++
++/*
++ * If logging is enabled the following functions must be defined by the
++ * platform:
++ *
++ *    MCUBOOT_LOG_MODULE_REGISTER(domain)
++ *      Register a new log module and add the current C file to it.
++ *
++ *    MCUBOOT_LOG_MODULE_DECLARE(domain)
++ *      Add the current C file to an existing log module.
++ *
++ *    MCUBOOT_LOG_ERR(...)
++ *    MCUBOOT_LOG_WRN(...)
++ *    MCUBOOT_LOG_INF(...)
++ *    MCUBOOT_LOG_DBG(...)
++ *
++ * The function priority is:
++ *
++ *    MCUBOOT_LOG_ERR > MCUBOOT_LOG_WRN > MCUBOOT_LOG_INF > MCUBOOT_LOG_DBG
++ */
++#define MCUBOOT_HAVE_LOGGING 1
++
++#define MCUBOOT_HAVE_ASSERT_H 1
++
++/* Define this to support native mcuboot logging system */
++#define CONFIG_MCUBOOT 1
++
++/*
++ * Assertions
++ */
++
++/* Uncomment if your platform has its own mcuboot_config/mcuboot_assert.h.
++ * If so, it must provide an ASSERT macro for use by bootutil. Otherwise,
++ * "assert" is used. */
++/* #define MCUBOOT_HAVE_ASSERT_H */
++
++/*
++ * Watchdog feeding
++ */
++
++/* This macro might be implemented if the OS / HW watchdog is enabled while
++ * doing a swap upgrade and the time it takes for a swapping is long enough
++ * to cause an unwanted reset. If implementing this, the OS main.c must also
++ * enable the watchdog (if required)!
++ */
++#include "port/boot_wdt_port.h"
++  #define MCUBOOT_WATCHDOG_FEED() \
++      do {                        \
++          boot_port_wdt_feed();   \
++      } while (0)
++
++/* 
++ * Serial booting
++ */
++
++/*
++ * This macro enables ability to activate serial boot mode, when boot pin activated,
++ * and interface mcumgr
++ */
++#define MCUBOOT_SERIAL 1
++
++/*
++ * Currently there is no configuration option, for this platform,
++ * that enables the system specific mcumgr commands in mcuboot
++ */
++#define MCUBOOT_PERUSER_MGMT_GROUP_ENABLED 0
++
++/*
++ * No direct idle call implemented
++ */
++#define MCUBOOT_CPU_IDLE() \
++    do {                   \
++    } while (0)
++
++
++#endif /* __MCUBOOT_CONFIG_H__ */
+diff --git a/boot/freertos/include/mcuboot_config/mcuboot_logging.h b/boot/freertos/include/mcuboot_config/mcuboot_logging.h
+new file mode 100644
+index 0000000..20b3cb5
+--- /dev/null
++++ b/boot/freertos/include/mcuboot_config/mcuboot_logging.h
+@@ -0,0 +1,60 @@
++/*
++ * Copyright (c) 2021 Espressif Systems (Shanghai) Co., Ltd.
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#pragma once
++
++
++#define MCUBOOT_LOG_LEVEL_OFF      0
++#define MCUBOOT_LOG_LEVEL_ERROR    1
++#define MCUBOOT_LOG_LEVEL_WARNING  2
++#define MCUBOOT_LOG_LEVEL_INFO     3
++#define MCUBOOT_LOG_LEVEL_DEBUG    4
++
++#ifndef MCUBOOT_LOG_LEVEL
++#define MCUBOOT_LOG_LEVEL MCUBOOT_LOG_LEVEL_INFO
++#endif
++
++extern int vLog( const char *pcFormat, ...);
++
++
++#if MCUBOOT_LOG_LEVEL >= MCUBOOT_LOG_LEVEL_ERROR
++#define MCUBOOT_LOG_ERR(_fmt, ...)                                      \
++    do {                                                                \
++            vLog(" [ERR] " _fmt "\n\r", ##__VA_ARGS__);         \
++    } while (0)
++#else
++#define MCUBOOT_LOG_ERR(_fmt, ...)
++#endif
++
++#if MCUBOOT_LOG_LEVEL >= MCUBOOT_LOG_LEVEL_WARNING
++#define MCUBOOT_LOG_WRN(_fmt, ...)                                      \
++    do {                                                                \
++            vLog(" [WRN] " _fmt "\n\r", ##__VA_ARGS__);         \
++    } while (0)
++#else
++#define MCUBOOT_LOG_WRN(_fmt, ...)
++#endif
++
++#if MCUBOOT_LOG_LEVEL >= MCUBOOT_LOG_LEVEL_INFO
++#define MCUBOOT_LOG_INF(_fmt, ...)                                      \
++    do {                                                                \
++            vLog(" [INF] " _fmt "\n\r", ##__VA_ARGS__);         \
++    } while (0)
++#else
++#define MCUBOOT_LOG_INF(_fmt, ...)
++#endif
++
++#if MCUBOOT_LOG_LEVEL >= MCUBOOT_LOG_LEVEL_DEBUG
++#define MCUBOOT_LOG_DBG(_fmt, ...)                                      \
++    do {                                                                \
++            vLog(" [DBG] " _fmt "\n\r", ##__VA_ARGS__);         \
++    } while (0)
++#else
++#define MCUBOOT_LOG_DBG(_fmt, ...)
++#endif
++
++#define MCUBOOT_LOG_MODULE_DECLARE(...)
++#define MCUBOOT_LOG_MODULE_REGISTER(...)
+diff --git a/boot/freertos/include/os/os.h b/boot/freertos/include/os/os.h
+new file mode 100644
+index 0000000..f28dcc4
+--- /dev/null
++++ b/boot/freertos/include/os/os.h
+@@ -0,0 +1 @@
++/* Empty file not used by this port */
+\ No newline at end of file
+diff --git a/boot/freertos/include/os/os_malloc.h b/boot/freertos/include/os/os_malloc.h
+new file mode 100644
+index 0000000..17d1aed
+--- /dev/null
++++ b/boot/freertos/include/os/os_malloc.h
+@@ -0,0 +1,42 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *  http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++
++#ifndef H_OS_MALLOC_
++#define H_OS_MALLOC_
++
++#include "port/boot_heap_port.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#undef  malloc
++#define malloc  boot_port_malloc
++
++#undef  free
++#define free    boot_port_free
++
++#undef  realloc
++#define realloc  boot_port_realloc
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/boot/freertos/include/port/base64_port.h b/boot/freertos/include/port/base64_port.h
+new file mode 100644
+index 0000000..fd3ebc2
+--- /dev/null
++++ b/boot/freertos/include/port/base64_port.h
+@@ -0,0 +1,9 @@
++#ifndef _BASE64_PORT_H_
++#define _BASE64_PORT_H_
++
++#include <stddef.h>
++
++int base64_port_encode( char * dst, size_t dlen, size_t * olen, char * src, size_t slen );
++int base64_port_decode( char * dst, size_t dlen, int * olen, char * src, size_t slen );
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/port/boot_assert_port.h b/boot/freertos/include/port/boot_assert_port.h
+new file mode 100644
+index 0000000..575322f
+--- /dev/null
++++ b/boot/freertos/include/port/boot_assert_port.h
+@@ -0,0 +1,7 @@
++#ifndef _BOOT_ASSERT_PORT_H_
++#define _BOOT_ASSERT_PORT_H_
++
++
++void boot_port_assert_handler( const char *pcFile, int lLine, const char * pcFunc );
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/port/boot_heap_port.h b/boot/freertos/include/port/boot_heap_port.h
+new file mode 100644
+index 0000000..1a31eeb
+--- /dev/null
++++ b/boot/freertos/include/port/boot_heap_port.h
+@@ -0,0 +1,11 @@
++#ifndef _BOOT_HEAP_PORT_H_
++#define _BOOT_HEAP_PORT_H_
++
++#include <stddef.h>
++
++void  boot_port_heap_init( void );
++void *boot_port_malloc( size_t size );
++void  boot_port_free( void *mem );
++void *boot_port_realloc( void *ptr, size_t size );
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/port/boot_log_port.h b/boot/freertos/include/port/boot_log_port.h
+new file mode 100644
+index 0000000..e79d67e
+--- /dev/null
++++ b/boot/freertos/include/port/boot_log_port.h
+@@ -0,0 +1,6 @@
++#ifndef _BOOT_LOG_PORT_H
++#define _BOOT_LOG_PORT_H
++
++void boot_port_log_init( void );
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/port/boot_serial_port.h b/boot/freertos/include/port/boot_serial_port.h
+new file mode 100644
+index 0000000..09b307e
+--- /dev/null
++++ b/boot/freertos/include/port/boot_serial_port.h
+@@ -0,0 +1,17 @@
++#ifndef _BOOT_SERIAL_PORT_H_
++#define _BOOT_SERIAL_PORT_H_
++
++#include "boot_serial/boot_serial.h"
++
++#include <stdbool.h>
++
++/* Initializes serial interface to mcumgr and gpio boot pin */
++void boot_port_serial_init( void );
++
++/* Return true if boot pin was activated within timeout */
++bool boot_port_serial_detect_boot_pin( void );
++
++/* Returns pointer to static structure with boot_uart_funcs defined */
++const struct boot_uart_funcs * boot_port_serial_get_functions( void );
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/port/boot_startup_port.h b/boot/freertos/include/port/boot_startup_port.h
+new file mode 100644
+index 0000000..56279c0
+--- /dev/null
++++ b/boot/freertos/include/port/boot_startup_port.h
+@@ -0,0 +1,7 @@
++#ifndef _BOOT_PORT_STARTUP_H_
++#define _BOOT_PORT_STARTUP_H_
++
++void boot_port_init( void );
++void boot_port_startup( struct boot_rsp *rsp );
++
++#endif
+diff --git a/boot/freertos/include/port/boot_wdt_port.h b/boot/freertos/include/port/boot_wdt_port.h
+new file mode 100644
+index 0000000..3c03e1d
+--- /dev/null
++++ b/boot/freertos/include/port/boot_wdt_port.h
+@@ -0,0 +1,8 @@
++#ifndef _BOOT_WDT_PORT_H
++#define _BOOT_WDT_PORT_H
++
++void boot_port_wdt_feed( void );
++
++void boot_port_wdt_disable( void );
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/port/crc16_port.h b/boot/freertos/include/port/crc16_port.h
+new file mode 100644
+index 0000000..64318c5
+--- /dev/null
++++ b/boot/freertos/include/port/crc16_port.h
+@@ -0,0 +1,9 @@
++#ifndef _CRC16_PORT_H_
++#define _CRC16_PORT_H_
++
++#include <stdint.h>
++
++uint16_t crc16_port_ccitt( uint16_t crc, char * data, uint32_t len);
++
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/port/system_port.h b/boot/freertos/include/port/system_port.h
+new file mode 100644
+index 0000000..f99598c
+--- /dev/null
++++ b/boot/freertos/include/port/system_port.h
+@@ -0,0 +1,12 @@
++#ifndef _SYSTEM_PORT_H_
++#define _SYSTEM_PORT_H_
++
++#include <stdint.h>
++
++uint16_t system_port_ntohs( uint16_t x );
++uint16_t system_port_htons( uint16_t x );
++
++void system_port_usleep( uint32_t usec );
++void system_port_reset( void );
++
++#endif
+\ No newline at end of file
+diff --git a/boot/freertos/include/sysflash/sysflash.h b/boot/freertos/include/sysflash/sysflash.h
+new file mode 100644
+index 0000000..193e89e
+--- /dev/null
++++ b/boot/freertos/include/sysflash/sysflash.h
+@@ -0,0 +1,18 @@
++/* Manual version of auto-generated version. */
++
++#ifndef __SYSFLASH_H__
++#define __SYSFLASH_H__
++
++#define BOOTLOADER_ID   0
++#define PRIMARY_ID      1
++#define SECONDARY_ID    2
++#define SCRATCH_ID      3
++
++
++#define FLASH_DEVICE_INTERNAL_FLASH    0
++#define FLASH_AREA_BOOTLOADER          BOOTLOADER_ID
++#define FLASH_AREA_IMAGE_PRIMARY(x)    PRIMARY_ID
++#define FLASH_AREA_IMAGE_SECONDARY(x)  SECONDARY_ID
++#define FLASH_AREA_IMAGE_SCRATCH       SCRATCH_ID
++
++#endif /* __SYSFLASH_H__ */
+diff --git a/boot/freertos/keys.c b/boot/freertos/keys.c
+new file mode 100644
+index 0000000..910a905
+--- /dev/null
++++ b/boot/freertos/keys.c
+@@ -0,0 +1,132 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *  http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++ /*******************************************************************************/
++
++#include <bootutil/sign_key.h>
++#include <mcuboot_config/mcuboot_config.h>
++
++#if !defined(MCUBOOT_HW_KEY)
++#if defined(MCUBOOT_SIGN_RSA)
++
++#if defined(RSA_KEY_FILE)
++#include RSA_KEY_FILE
++#else
++#warning "Used default RSA rsa_pub_key"
++/* Autogenerated by imgtool.py, do not edit. */
++const unsigned char rsa_pub_key[] = {
++    0x30, 0x82, 0x01, 0x0a, 0x02, 0x82, 0x01, 0x01,
++    0x00, 0xd1, 0x06, 0x08, 0x1a, 0x18, 0x44, 0x2c,
++    0x18, 0xe8, 0xfb, 0xfd, 0xf7, 0x0d, 0xa3, 0x4f,
++    0x1f, 0xbb, 0xee, 0x5e, 0xf9, 0xaa, 0xd2, 0x4b,
++    0x18, 0xd3, 0x5a, 0xe9, 0x6d, 0x18, 0x80, 0x19,
++    0xf9, 0xf0, 0x9c, 0x34, 0x1b, 0xcb, 0xf3, 0xbc,
++    0x74, 0xdb, 0x42, 0xe7, 0x8c, 0x7f, 0x10, 0x53,
++    0x7e, 0x43, 0x5e, 0x0d, 0x57, 0x2c, 0x44, 0xd1,
++    0x67, 0x08, 0x0f, 0x0d, 0xbb, 0x5c, 0xee, 0xec,
++    0xb3, 0x99, 0xdf, 0xe0, 0x4d, 0x84, 0x0b, 0xaa,
++    0x77, 0x41, 0x60, 0xed, 0x15, 0x28, 0x49, 0xa7,
++    0x01, 0xb4, 0x3c, 0x10, 0xe6, 0x69, 0x8c, 0x2f,
++    0x5f, 0xac, 0x41, 0x4d, 0x9e, 0x5c, 0x14, 0xdf,
++    0xf2, 0xf8, 0xcf, 0x3d, 0x1e, 0x6f, 0xe7, 0x5b,
++    0xba, 0xb4, 0xa9, 0xc8, 0x88, 0x7e, 0x47, 0x3c,
++    0x94, 0xc3, 0x77, 0x67, 0x54, 0x4b, 0xaa, 0x8d,
++    0x38, 0x35, 0xca, 0x62, 0x61, 0x7e, 0xb7, 0xe1,
++    0x15, 0xdb, 0x77, 0x73, 0xd4, 0xbe, 0x7b, 0x72,
++    0x21, 0x89, 0x69, 0x24, 0xfb, 0xf8, 0x65, 0x6e,
++    0x64, 0x3e, 0xc8, 0x0e, 0xd7, 0x85, 0xd5, 0x5c,
++    0x4a, 0xe4, 0x53, 0x0d, 0x2f, 0xff, 0xb7, 0xfd,
++    0xf3, 0x13, 0x39, 0x83, 0x3f, 0xa3, 0xae, 0xd2,
++    0x0f, 0xa7, 0x6a, 0x9d, 0xf9, 0xfe, 0xb8, 0xce,
++    0xfa, 0x2a, 0xbe, 0xaf, 0xb8, 0xe0, 0xfa, 0x82,
++    0x37, 0x54, 0xf4, 0x3e, 0xe1, 0x2b, 0xd0, 0xd3,
++    0x08, 0x58, 0x18, 0xf6, 0x5e, 0x4c, 0xc8, 0x88,
++    0x81, 0x31, 0xad, 0x5f, 0xb0, 0x82, 0x17, 0xf2,
++    0x8a, 0x69, 0x27, 0x23, 0xf3, 0xab, 0x87, 0x3e,
++    0x93, 0x1a, 0x1d, 0xfe, 0xe8, 0xf8, 0x1a, 0x24,
++    0x66, 0x59, 0xf8, 0x1c, 0xab, 0xdc, 0xce, 0x68,
++    0x1b, 0x66, 0x64, 0x35, 0xec, 0xfa, 0x0d, 0x11,
++    0x9d, 0xaf, 0x5c, 0x3a, 0xa7, 0xd1, 0x67, 0xc6,
++    0x47, 0xef, 0xb1, 0x4b, 0x2c, 0x62, 0xe1, 0xd1,
++    0xc9, 0x02, 0x03, 0x01, 0x00, 0x01,
++};
++const unsigned int rsa_pub_key_len = 270;
++#endif
++
++#elif defined(MCUBOOT_SIGN_EC256)
++/* Format of PEM :
++ * -----BEGIN PUBLIC KEY-----
++ * base64encode(DER)
++ * -----END PUBLIC KEY----- */
++#if defined(ECC256_KEY_FILE)
++#include ECC256_KEY_FILE
++#else
++#warning "Used default ECC256 ecdsa_pub_key"
++/* Autogenerated by imgtool.py, do not edit. */
++const unsigned char ecdsa_pub_key[] = {
++    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86,
++    0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
++    0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
++    0x42, 0x00, 0x04, 0xcf, 0xe0, 0xe6, 0x1d, 0xe5,
++    0xed, 0x8d, 0x82, 0xf3, 0xaf, 0x4d, 0xd4, 0x25,
++    0xf5, 0xab, 0x2c, 0x09, 0x8b, 0x78, 0x09, 0xf4,
++    0x31, 0x4d, 0x02, 0x98, 0x8b, 0x4d, 0xf6, 0x9f,
++    0x62, 0xb5, 0xb4, 0x93, 0x53, 0x64, 0x0b, 0x2a,
++    0xf8, 0x06, 0xbb, 0x2d, 0xc4, 0x0a, 0x63, 0x6c,
++    0xf1, 0x9c, 0x91, 0xa1, 0x44, 0x07, 0x8e, 0x6b,
++    0x83, 0xca, 0xfc, 0x25, 0x17, 0xe8, 0x3c, 0xbb,
++    0x8b, 0x48, 0xb5,
++};
++const unsigned int ecdsa_pub_key_len = 91;
++#endif
++#else
++#warning "No public key available for given signing algorithm."
++#endif
++
++#if defined(MCUBOOT_SIGN_RSA) || \
++    defined(MCUBOOT_SIGN_EC256)
++const struct bootutil_key bootutil_keys[] = {
++#if defined(MCUBOOT_SIGN_RSA)
++    {
++        .key = rsa_pub_key,
++        .len = &rsa_pub_key_len,
++    },
++#elif defined(MCUBOOT_SIGN_EC256)
++    {
++        .key = ecdsa_pub_key,
++        .len = &ecdsa_pub_key_len,
++    },
++#else
++    {
++        .key = NULL,
++        .len = 0x00,
++    },
++#endif
++};
++const int bootutil_key_cnt = 1;
++#endif
++#else
++unsigned int pub_key_len;
++struct bootutil_key bootutil_keys[1] = {
++    {
++        .key = 0,
++        .len = &pub_key_len,
++    }
++};
++const int bootutil_key_cnt = 1;
++#endif /* !MCUBOOT_HW_KEY */
+diff --git a/boot/freertos/main.c b/boot/freertos/main.c
+new file mode 100644
+index 0000000..add43d6
+--- /dev/null
++++ b/boot/freertos/main.c
+@@ -0,0 +1,58 @@
++#include "bootutil/bootutil.h"
++#include "bootutil/bootutil_log.h"
++#include "bootutil/image.h"
++#include "boot_serial/boot_serial.h"
++#include "mcuboot_config/mcuboot_logging.h"
++
++#include "port/boot_log_port.h"
++#include "port/boot_serial_port.h"
++#include "port/boot_startup_port.h"
++#include "port/boot_heap_port.h"
++
++
++int main( void )
++{
++    struct boot_rsp rsp;
++    fih_int fih_rc = FIH_FAILURE;
++
++    BOOT_LOG_INF("Starting bootloader...");
++
++    /* Init required bootloader hardware, such as watchdog */
++    boot_port_init();
++    BOOT_LOG_INF("Bootloader port initialized.");
++    boot_port_log_init();
++    BOOT_LOG_INF("Bootloader logging initialized.");
++    
++#if MCUBOOT_SERIAL > 0
++    boot_port_serial_init();
++    BOOT_LOG_INF("Bootloader serial IF initialized.");
++    BOOT_LOG_INF("Checking serial boot activation pin/button.");
++    if( boot_port_serial_detect_boot_pin() )
++    {
++        BOOT_LOG_INF("Entering serial boot mode...");
++        boot_port_wdt_disable();
++        const struct boot_uart_funcs * boot_funcs = boot_port_serial_get_functions();
++        boot_serial_start( boot_funcs );
++        BOOT_LOG_ERR("Returned from serial boot mode.");
++        FIH_PANIC;
++    }
++    else
++    {
++        BOOT_LOG_INF("Skipping serial boot mode...");
++    }
++#endif
++
++    BOOT_LOG_INF("Starting boot...");
++    boot_port_heap_init();
++    FIH_CALL(boot_go, fih_rc, &rsp);
++    if (fih_not_eq(fih_rc, FIH_SUCCESS)) 
++    {
++        BOOT_LOG_ERR("Unable to find bootable image.");
++        FIH_PANIC;
++    }
++    
++    boot_port_startup( &rsp );
++
++    BOOT_LOG_ERR("Returned after image startup. Should never should get here.");
++    while (1);
++}
+\ No newline at end of file
+-- 
+2.25.1
+

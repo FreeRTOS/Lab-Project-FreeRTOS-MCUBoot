@@ -1,0 +1,3 @@
+[submodule "lib/mcuboot"]
+	path = lib/mcuboot
+	url = https://github.com/mcu-tools/mcuboot.git

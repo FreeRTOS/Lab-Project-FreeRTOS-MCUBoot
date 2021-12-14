@@ -1,4 +1,9 @@
 # Building and Uploading Bootloader
+Apply the necessary patches
+```
+git -C lib/mcuboot apply ../../patches/mcuboot.patch
+```
+
 Configure ESP-IDF tools
 ```console
 ./lib/mcuboot/boot/espressif/hal/esp-idf/install.sh

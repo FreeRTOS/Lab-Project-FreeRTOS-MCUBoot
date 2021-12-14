@@ -130,8 +130,3 @@ $IDF_PATH/components/esptool_py/esptool/esptool.py -b 2000000 --before default_r
 
 ## Serial Firmware Updates
 TODO: Show where to download the concluded mcumgr cli tool 
-
-
-
-# TODO:
-- Need to ensure that bootloader + size will not intersect with user assigned app primary address

@@ -42,7 +42,7 @@ xtensa-esp32-elf-gdb -x gdbinit build/mcuboot_esp32.elf
 ```
 
 # Building and Uploading Application
-The application simply prints the application version, image diagnostics, and spawns an OTA thread listening/ingesting FreeRTOS OTA jobs launched from AWS IoT Core.
+The application marks confirms its image, so that it won't be reverted if its an update, prints the application version, then creates a task which periodically prints "hello world".
 
 Apply required patches
 ```

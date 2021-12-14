@@ -68,10 +68,15 @@ cmake -DSIGNING_SCHEME=ecdsa-p256 -DKEY_PATH=../bootloader/mcuboot-private-key.p
 ```
 If did not build the bootloader for image signature verification, you must omit the `SIGNING_SCHEME` and `KEY_PATH` definitions above.
 
-Finally, to build and flash the application
+Finally, to build and flash the application directly the primary image slot. This will overwrite the previous primary image.
 ```
 cmake --build build --target app
 cmake --build build --target mcuboot-app-flash
+```
+
+Alternatively, you can _upgrade_ the application by downloading the image into the secondary image slot. If the the image in the secondary slot has a newer version than that of the primary slot, the bootloader will swap the images and tentatively boot the update image. Since the application confirms itself during this tentative boot, it then persists as primary image. To upgrade the image:
+```
+cmake --build build --target mcuboot-app-upgrade
 ```
 
 ## Generating private key for signing application images

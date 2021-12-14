@@ -104,6 +104,26 @@ idf.py gdb
 ```
 
 # MCUMGR Interface
+Serial boot mode is enabled by default, but can be disabled by setting `MCUBOOT_SERIAL` to 0 in  `mcuboot_config.h` located in `lib/mcuboot/boot/freertos`. The serial boot pin is checked during boot up, and if is active, serial boot mode is entered. For the demo, the serial boot pin is configured as `GPIO 5`, and is active high. You can ground the pin to skip serial mode, or tie it to VCC to enter serial mode. Once serial mode is running, you may interface the board with mcumgr. Installation instructions for mcumgr can be found here (https://github.com/apache/mynewt-mcumgr-cli).
 
-## Serial Firmware Updates
-TODO: Show where to download the concluded mcumgr cli tool 
+MCUMGR will communicate with the board via UART pins which, for this demo, are set as `GPIO 27 (RX)` and `GPIO 26 (TX)`. You can use a USB-to-UART cable such as [this one](https://www.adafruit.com/product/954).
+
+Define a connection for mcumgr setting the USB descriptor that corresponds with your USB-to-UART that connects with the device.
+```
+mcumgr conn add esp type="serial" connstring=“dev=/dev/<USB>,baud=115200,mtu=256”
+```
+To list images on the device
+```
+mcumgr -c esp image list
+```
+To upload an image
+```
+mcumgr -c esp image upload /path/to/mcuboot-image.bin
+```
+This expects a signed/formatted MCUBoot image. After building the application, this can be found in its build directory as `build/mcuboot-app.bin`. 
+
+To reset the board 
+```
+mcumgr -c esp reset
+```
+

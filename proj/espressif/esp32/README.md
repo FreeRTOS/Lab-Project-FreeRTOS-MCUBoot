@@ -79,59 +79,6 @@ Alternatively, you can _upgrade_ the application by downloading the image into t
 cmake --build build --target mcuboot-app-upgrade
 ```
 
-## Generating private key for signing application images
-The bootloader expects images to be signed using user owned keys. Keys are critical in security. Add file protections to them
-and do not distribute. For full details on image signing with MCUBoot, you may review their [documentation](https://github.com/mcu-tools/mcuboot/blob/main/docs/imgtool.md).
-
-First, select a keypair scheme (rsa-2048, rsa-3072, ecdsa-p256, ed25519). This scheme must be consistent with the bootloader configuration. To designate, exclusively define related configs for the scheme in `boot/freertos/include/mcuboot_config/mcuboot_config.h`.
-```c
-// For RSA. Replace `YOUR_RSA_LEN` with the length of selected key.
-#define MCUBOOT_SIGN_RSA
-#define MCUBOOT_SIGN_RSA_LEN YOUR_RSA_LEN
-```
-Or
-```c
-// For ECDSA
-#define MCUBOOT_SIGN_EC256
-```
-
-Generate the key using a scheme from the list above. In this example we'll use ecdsa-p256. Make sure to relocate/protect the key file adequately.
-```console
-pip install -r lib/mcuboot/scripts/requirements.txt
-lib/mcuboot/scripts/imgtool.py keygen -k private-key.pem -t ecdsa-p256
-```
-## Generating public key for bootloader verification
-The bootloader will use the associated public key to verify that the image was signed with your private key.
-
-Generate the formatted public key from existing private key, and placing/replacing its output into `boot/freertos/keys.c`
-```console
-lib/mcuboot/scripts/imgtool.py getpub -k private-key.pem 
-```
-
-Finally, rebuild and upload the bootloader as described in previous sections.
-
-## Signing and uploading application
-Sign and format the image for bootloader
-```console
-cd proj/espressif/esp32/app
-../../../../lib/mcuboot/scripts/imgtool.py sign --key private-key.pem --header-size 32 --align 4 --version 1.0 --slot-size 0x50000 --pad-header --pad build/app.bin build/signed-app.bin
-```
-Or, if the image was already padded with 0's at the beginning of the image, you can put:
-```
-../../../../lib/mcuboot/scripts/imgtool.py sign --key private-key.pem --header-size 32 --align 4 --version 1.0 --slot-size 0x100000 build/app.bin build/signed-app.bin
-```
-
-Define which USB port is connected to esp32 module. Replace `USB_PATH` with the path to your board USB descriptor. (Ex. /dev/ttyUSB1)
-```console
-export ESPPORT=${USB_PATH}
-```
-
-Flash the application to your board.
-```console
-$IDF_PATH/components/esptool_py/esptool/esptool.py -b 2000000 --before default_reset --after hard_reset --chip esp32 write_flash --flash_mode dio --flash_size detect --flash_freq 40m 0x20000 build/app.bin
-```
-
-
 # MCUMGR Interface
 
 ## Serial Firmware Updates

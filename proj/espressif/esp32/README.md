@@ -2,6 +2,7 @@
 Apply the necessary patches
 ```
 git -C lib/mcuboot apply ../../patches/mcuboot.patch
+git -C lib/mcuboot/boot/espressif/hal/esp-idf/ apply ../../../../../../patches/esp-idf.patch
 ```
 
 Configure ESP-IDF tools
@@ -48,11 +49,6 @@ xtensa-esp32-elf-gdb -x gdbinit build/mcuboot_esp32.elf
 
 # Building and Uploading Application
 The application marks confirms its image, so that it won't be reverted if its an update, prints the application version, then creates a task which periodically prints "hello world".
-
-Apply required patches
-```
-git -C lib/mcuboot/boot/espressif/hal/esp-idf/ apply ../../../../../../patches/0001-support-idf-app-building-for-mcuboot-images.patch
-```
 
 Configure ESP-IDF tools
 ```console

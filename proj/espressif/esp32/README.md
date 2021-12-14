@@ -28,22 +28,22 @@ Build and flash the bootloader to the board
 cmake --build build --target mcuboot-flash
 ```
 
-## Debugging Bootloader
-Configure ESP-IDF tools
+## Debugging The Bootloader
+In two seperate shell sessions, configure ESP-IDF tools
 ```console
 ./lib/mcuboot/boot/espressif/hal/esp-idf/install.sh
 source lib/mcuboot/boot/espressif/hal/esp-idf/export.sh
 ```
 
-In a separate terminal, enter app directory, then start openocd server
+In one terminal, enter app directory and start openocd server
 ```console
 cd proj/espressif/esp32/app
 idf.py openocd
 ```
 
-In a separate terminal, enter bootloader directory, then start gdb session
+In the other terminal, enter bootloader directory and start the GDB session
 ```console
-cd ../bootloader
+cd proj/espressif/esp32/bootloader
 xtensa-esp32-elf-gdb -x gdbinit build/mcuboot_esp32.elf
 ```
 
@@ -77,6 +77,30 @@ cmake --build build --target mcuboot-app-flash
 Alternatively, you can _upgrade_ the application by downloading the image into the secondary image slot. If the the image in the secondary slot has a newer version than that of the primary slot, the bootloader will swap the images and tentatively boot the update image. Since the application confirms itself during this tentative boot, it then persists as primary image. To upgrade the image:
 ```
 cmake --build build --target mcuboot-app-upgrade
+```
+Finally, to view output from the device.
+
+```
+idf.py monitor
+```
+
+## Debugging The Application
+In two seperate shell sessions, configure ESP-IDF tools
+```console
+./lib/mcuboot/boot/espressif/hal/esp-idf/install.sh
+source lib/mcuboot/boot/espressif/hal/esp-idf/export.sh
+```
+
+In one terminal, enter app directory and start openocd server
+```console
+cd proj/espressif/esp32/app
+idf.py openocd
+```
+
+In the other terminal, enter app directory and start the GDB session
+```console
+cd proj/espressif/esp32/app
+idf.py gdb
 ```
 
 # MCUMGR Interface

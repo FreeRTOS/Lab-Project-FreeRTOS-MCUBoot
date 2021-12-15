@@ -1,5 +1,5 @@
 # Labs-FreeRTOS-Plus-MCUBoot
-Reference examples for FreeRTOS with [MCUBoot](https://github.com/mcu-tools/mcuboot) support.
+Reference example for FreeRTOS with [MCUBoot](https://github.com/mcu-tools/mcuboot) support.
 
 MCUBoot is a configurable secure bootloader maintained by several industry leaders. It can operate as the first or second stage bootloader, with support for cryptographic verification of software images via one of the following:
 
@@ -11,8 +11,13 @@ By default, it supports image reversion whereby uploaded image upgrades are tent
 
 MCUBoot also provides subset support for [`mcumgr`](https://github.com/apache/mynewt-mcumgr-cli) when a device enters serial boot recovery mode. If enabled, serial mode can be triggered during bootup via user input, such as a button hold. MCUMGR interface enables users to retrieve image diagnostics from the board, query resets, upload/modify images, and more.
 
+## Demo Description
+The demo consists of MCUBoot booting an application which first disables a bootloader watchdog timer, prints its version number, then confirms itself so it won’t be reverted if it's an update. The app proceeds to periodically print “hello world”. 
 
-| Supported Boards |
+The demo also details the application signing and upgrade process, and provides a porting guide for implementing on other SoCs. Finally, use [`mcumgr`](https://github.com/apache/mynewt-mcumgr-cli) is demonstrated for retrieving image diagnostics, modifying/uploading images, and triggering other board functions from your host PC.
+
+
+| Supported SoCs |
 | ---- |
 | Espressif esp32 |
 

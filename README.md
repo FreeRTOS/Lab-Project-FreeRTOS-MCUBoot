@@ -14,7 +14,7 @@ MCUBoot also provides subset support for [`mcumgr`](https://github.com/apache/my
 ## Demo Description
 The demo consists of MCUBoot booting an application which first disables a bootloader watchdog timer, prints its version number, then confirms itself so it won’t be reverted if it's an update. The app proceeds to periodically print “hello world”. 
 
-The demo also details the application signing and upgrade process, and provides a porting guide for implementing on other SoCs. Finally, use [`mcumgr`](https://github.com/apache/mynewt-mcumgr-cli) is demonstrated for retrieving image diagnostics, modifying/uploading images, and triggering other board functions from your host PC.
+The demo also details the application signing and upgrade process, and provides a porting guide for implementing on other SoCs. Finally, use of [`mcumgr`](https://github.com/apache/mynewt-mcumgr-cli) is demonstrated for retrieving image diagnostics, modifying/uploading images, and triggering other board functions from your host PC.
 
 
 | Supported SoCs |

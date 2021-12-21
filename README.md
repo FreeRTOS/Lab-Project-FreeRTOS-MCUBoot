@@ -21,6 +21,16 @@ The demo also details the application signing and upgrade process, and provides 
 | ---- |
 | Espressif esp32 |
 
+## Patch Description
+The `mcuboot.patch` provides:
+ - Bug fixes
+ - Implants hooks for replacing function calls that were specific to other RTOS
+ - Provides `boot/freertos` content
+ - Bug fixes and enhancements to MCUBoot's Espressif port
+ 
+ The `esp-idf.patch` provides:
+  - IDF capability to build and format applications for Espressif's MCUBoot application loader
+
 ## License
 
 This library is licensed under the MIT-0 License. See the LICENSE file.

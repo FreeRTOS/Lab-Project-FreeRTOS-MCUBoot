@@ -1,3 +1,5 @@
+> ⚠️ **Disclaimer:** This repository is a FreeRTOS Labs reference project, provided for demonstration and evaluation purposes only, and should not be used in production.
+
 # Labs-FreeRTOS-Plus-MCUBoot
 Reference example for FreeRTOS with [MCUBoot](https://github.com/mcu-tools/mcuboot) support.
 
